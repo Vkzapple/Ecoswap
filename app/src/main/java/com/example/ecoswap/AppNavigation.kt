@@ -34,7 +34,7 @@ fun AppNavigation() {
 
         NavHost(
             navController = navController,
-            startDestination = "splash", // 🔥 UBAH DI SINI
+            startDestination = "splash",
             modifier = Modifier.padding(padding)
         ) {
 
