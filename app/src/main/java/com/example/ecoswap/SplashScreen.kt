@@ -11,7 +11,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.*
 import androidx.navigation.NavController
@@ -52,7 +51,7 @@ fun SplashScreen(navController: NavController) {
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(
-                    listOf(Color(0xFF1FAA59), Color(0xFF38D67A))
+                    listOf(Color(0xFFFCF8F8), Color(0xFFFCF8F8))
                 )
             ),
         contentAlignment = Alignment.Center
@@ -63,10 +62,10 @@ fun SplashScreen(navController: NavController) {
         ) {
 
             Image(
-                painter = painterResource(id = R.drawable.logo_ecoswap), // nanti kamu ganti
+                painter = painterResource(id = R.drawable.ecoswap), // nanti kamu ganti
                 contentDescription = null,
                 modifier = Modifier
-                    .size(150.dp)
+                    .size(350.dp)
                     .graphicsLayer {
                         scaleX = scale
                         scaleY = scale

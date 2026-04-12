@@ -17,8 +17,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.navigation.NavController
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavController
 
 @Composable
 fun LoginScreen(
@@ -26,98 +26,64 @@ fun LoginScreen(
     role: String,
     viewModel: AuthViewModel = viewModel()
 ) {
-
     var nisOrEmail by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
 
+    val state = viewModel.uiState
+    val green = Color(0xFF1FAA59)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(Color(0xFF1FAA59), Color(0xFF38D67A))
-                )
-            )
+            .background(Brush.verticalGradient(listOf(green, Color(0xFF38D67A))))
     ) {
-
-        // HEADER
+        // ── HEADER ────────────────────────────────────────────────────────────
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = 24.dp, top = 80.dp)
         ) {
-            Text(
-                "Login",
-                style = MaterialTheme.typography.headlineMedium,
-                color = Color.White,
-                fontWeight = FontWeight.Bold
-            )
-
-            Text(
-                "untuk mengakses aplikasi!",
-                color = Color.White.copy(alpha = 0.8f)
-            )
+            Text("Login", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.Bold)
+            Text("untuk mengakses aplikasi!", color = Color.White.copy(0.8f))
         }
 
-        // WHITE CARD
+        // ── CARD ──────────────────────────────────────────────────────────────
         Card(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth(),
+            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
             shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
         ) {
-
             Column(
-                modifier = Modifier
-                    .padding(28.dp)
-                    .fillMaxWidth()
+                modifier = Modifier.padding(28.dp).fillMaxWidth()
             ) {
+                Spacer(Modifier.height(8.dp))
 
-                Spacer(modifier = Modifier.height(16.dp))
-
+                // NIS / Email field
                 OutlinedTextField(
                     value = nisOrEmail,
                     onValueChange = { nisOrEmail = it },
-                    label = {
-                        Text(
-                            if (role == "siswa") "NIS"
-                            else "Email Sekolah"
-                        )
-                    },
+                    label = { Text(if (role == "siswa") "NIS" else "Email") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color(0xFF1FAA59),
+                        focusedBorderColor = green,
                         unfocusedBorderColor = Color.LightGray
                     )
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(Modifier.height(16.dp))
 
-                // PASSWORD
+                // Password
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
                     label = { Text("Kata Sandi") },
                     singleLine = true,
-                    visualTransformation =
-                        if (passwordVisible)
-                            VisualTransformation.None
-                        else
-                            PasswordVisualTransformation(),
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
-                        IconButton(
-                            onClick = {
-                                passwordVisible = !passwordVisible
-                            }
-                        ) {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
                             Icon(
-                                imageVector =
-                                    if (passwordVisible)
-                                        Icons.Filled.Visibility
-                                    else
-                                        Icons.Filled.VisibilityOff,
+                                if (passwordVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
                                 contentDescription = null
                             )
                         }
@@ -125,80 +91,72 @@ fun LoginScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(Modifier.height(8.dp))
 
                 Text(
                     "Lupa Kata Sandi?",
-                    modifier = Modifier
-                        .align(Alignment.End)
-                        .clickable { },
+                    modifier = Modifier.align(Alignment.End).clickable {},
                     color = Color.Gray
                 )
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(Modifier.height(8.dp))
 
-                // LOGIN BUTTON
+                // Error
+                state.error?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error)
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                // Login Button
                 Button(
                     onClick = {
-                        // dummy login
-                        navController.navigate("home/Dimas")
+                        if (nisOrEmail.isNotBlank() && password.isNotBlank()) {
+                            if (role == "siswa") {
+                                viewModel.loginSiswa(nisOrEmail, password) { profile ->
+                                    navController.navigate("home/${profile.name}") {
+                                        popUpTo("login/$role") { inclusive = true }
+                                    }
+                                }
+                            } else {
+                                viewModel.loginMitra(nisOrEmail, password) { profile ->
+                                    navController.navigate("home/${profile.name}") {
+                                        popUpTo("login/$role") { inclusive = true }
+                                    }
+                                }
+                            }
+                        }
                     },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp),
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
                     shape = RoundedCornerShape(50),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF1FAA59)
-                    )
+                    colors = ButtonDefaults.buttonColors(containerColor = green),
+                    enabled = !state.isLoading
                 ) {
-                    Text("Login")
+                    if (state.isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp))
+                    else Text("Login", fontWeight = FontWeight.Bold)
                 }
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(Modifier.height(20.dp))
 
-                // DIVIDER
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Divider(
-                        modifier = Modifier.weight(1f)
-                    )
-                    Text(
-                        "  atau lanjut dengan  ",
-                        color = Color.Gray
-                    )
-                    Divider(
-                        modifier = Modifier.weight(1f)
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Divider(modifier = Modifier.weight(1f))
+                    Text("  atau lanjut dengan  ", color = Color.Gray)
+                    Divider(modifier = Modifier.weight(1f))
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(Modifier.height(16.dp))
 
-                // SOCIAL BUTTONS
                 Row(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-
-                    OutlinedButton(
-                        onClick = { },
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("Facebook")
-                    }
-
-                    OutlinedButton(
-                        onClick = { },
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("Google")
-                    }
+                    OutlinedButton(onClick = {}, shape = RoundedCornerShape(12.dp)) { Text("Facebook") }
+                    OutlinedButton(onClick = {}, shape = RoundedCornerShape(12.dp)) { Text("Google") }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
-
-                // REGISTER
                 if (role == "siswa") {
+                    Spacer(Modifier.height(16.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.Center
@@ -206,16 +164,14 @@ fun LoginScreen(
                         Text("Belum memiliki akun? ")
                         Text(
                             "Daftar",
-                            color = Color(0xFF1FAA59),
+                            color = green,
                             fontWeight = FontWeight.Bold,
-                            modifier = Modifier.clickable {
-                                navController.navigate("register")
-                            }
+                            modifier = Modifier.clickable { navController.navigate("register") }
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(Modifier.height(16.dp))
             }
         }
     }
