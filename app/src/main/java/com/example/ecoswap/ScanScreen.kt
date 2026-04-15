@@ -1,6 +1,14 @@
 package com.example.ecoswap
 
+import android.Manifest
+import android.graphics.Bitmap
+import android.os.Handler
+import android.os.Looper
+import androidx.camera.core.*
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -8,115 +16,251 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavController
 import com.example.ecoswap.data.FirebaseRepository
+import com.example.ecoswap.data.ScanResult
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
+import kotlinx.coroutines.launch
+import java.util.concurrent.Executors
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  SCAN SCREEN
-//  NOTE FOR AI DEVELOPER:
-//  - Ganti `CameraPreviewPlaceholder` dengan integrasi CameraX sesungguhnya.
-//  - Setelah YOLO inference, panggil `FirebaseRepository().saveScanResult(...)`
-//  - Lihat README.md section "AI Integration Bridge" untuk detail lengkap.
-// ─────────────────────────────────────────────────────────────────────────────
-
+@OptIn(ExperimentalPermissionsApi::class)
 @Composable
 fun ScanScreen(navController: NavController) {
-    var scanState by remember { mutableStateOf<ScanState>(ScanState.Idle) }
-    var flashOn by remember { mutableStateOf(false) }
+    var scanState    by remember { mutableStateOf<ScanState>(ScanState.Idle) }
+    var flashOn      by remember { mutableStateOf(false) }
+    var detections   by remember { mutableStateOf<List<Detection>>(emptyList()) }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-    ) {
-        // ── CAMERA PREVIEW AREA ──────────────────────────────────────────────
-        // TODO (AI Developer): Ganti Box ini dengan AndroidView + CameraX Preview
-        // Contoh:
-        //   val previewView = remember { PreviewView(context) }
-        //   AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
-        //   LaunchedEffect(Unit) { startCamera(context, previewView, lifecycleOwner) }
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            // Placeholder gelap saat kamera belum terhubung
+    // Holds the latest frame bitmap captured from the analyzer
+    var latestBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    val context        = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope          = rememberCoroutineScope()
+    val detector       = remember { YoloDetector(context) }
+    val mainHandler    = remember { Handler(Looper.getMainLooper()) }
+    var cameraRef      by remember { mutableStateOf<Camera?>(null) }
+
+    val green = Color(0xFF1FAA59)
+
+    LaunchedEffect(flashOn) { cameraRef?.cameraControl?.enableTorch(flashOn) }
+    DisposableEffect(Unit) { onDispose { detector.close() } }
+
+    // Called when user taps the scan button — runs detection on the last captured frame
+    fun triggerScan() {
+        val bmp = latestBitmap ?: return
+        scanState = ScanState.Scanning
+        val results = detector.detect(bmp)
+        detections = results
+        scanState = when {
+            results.isEmpty() -> ScanState.Unrecognized
+            results.first().confidence < 0.35f -> ScanState.LowConfidence
+            else -> ScanState.Result(
+                wasteLabel    = results.first().label,
+                wasteCategory = results.first().category,
+                confidence    = results.first().confidence,
+                pointPerKg    = results.first().pointsPerKg
+            )
+        }
+    }
+
+    val cameraPermission = rememberPermissionState(Manifest.permission.CAMERA)
+    if (!cameraPermission.status.isGranted) {
+        Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("📷", fontSize = 64.sp)
+                Text("📷", fontSize = 48.sp)
+                Spacer(Modifier.height(16.dp))
+                Text("Izin kamera diperlukan", color = Color.White, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    "Arahkan kamera ke sampah",
-                    color = Color.White.copy(0.6f),
-                    fontSize = 14.sp
+                Button(
+                    onClick = { cameraPermission.launchPermissionRequest() },
+                    colors = ButtonDefaults.buttonColors(containerColor = green)
+                ) { Text("Izinkan Kamera") }
+            }
+        }
+        return
+    }
+
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+
+        // ── Camera Preview ────────────────────────────────────────────────────
+        AndroidView(
+            factory = { ctx ->
+                val previewView          = PreviewView(ctx)
+                val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+
+                cameraProviderFuture.addListener({
+                    val cameraProvider = cameraProviderFuture.get()
+                    val preview = Preview.Builder().build().also {
+                        it.setSurfaceProvider(previewView.surfaceProvider)
+                    }
+
+                    val analyzer = ImageAnalysis.Builder()
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .build().also { analysis ->
+                            analysis.setAnalyzer(Executors.newSingleThreadExecutor()) { imageProxy ->
+                                // Always keep the latest frame ready, but never run detection here
+                                val bitmap = imageProxy.toBitmap()
+                                mainHandler.post { latestBitmap = bitmap }
+                                imageProxy.close()
+                            }
+                        }
+
+                    runCatching {
+                        cameraProvider.unbindAll()
+                        cameraRef = cameraProvider.bindToLifecycle(
+                            lifecycleOwner,
+                            CameraSelector.DEFAULT_BACK_CAMERA,
+                            preview,
+                            analyzer
+                        )
+                    }
+                }, ContextCompat.getMainExecutor(ctx))
+
+                previewView
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // ── Bounding Box Overlay (only shown after a scan produces results) ──
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            detections.forEach { det ->
+                val box    = det.boundingBox
+                val left   = box.left   * size.width
+                val top    = box.top    * size.height
+                val right  = box.right  * size.width
+                val bottom = box.bottom * size.height
+                val w      = right - left
+                val h      = bottom - top
+
+                drawRect(
+                    color   = Color(0xFF1FAA59),
+                    topLeft = Offset(left, top),
+                    size    = Size(w, h),
+                    style   = Stroke(width = 3f)
+                )
+
+                val cornerLen = minOf(w, h) * 0.15f
+                val c = Color(0xFF1FAA59)
+                drawLine(c, Offset(left, top), Offset(left + cornerLen, top), 6f)
+                drawLine(c, Offset(left, top), Offset(left, top + cornerLen), 6f)
+                drawLine(c, Offset(right, top), Offset(right - cornerLen, top), 6f)
+                drawLine(c, Offset(right, top), Offset(right, top + cornerLen), 6f)
+                drawLine(c, Offset(left, bottom), Offset(left + cornerLen, bottom), 6f)
+                drawLine(c, Offset(left, bottom), Offset(left, bottom - cornerLen), 6f)
+                drawLine(c, Offset(right, bottom), Offset(right - cornerLen, bottom), 6f)
+                drawLine(c, Offset(right, bottom), Offset(right, bottom - cornerLen), 6f)
+
+                drawRect(
+                    color   = Color(0xFF1FAA59),
+                    topLeft = Offset(left, top - 36f),
+                    size    = Size(w, 36f)
                 )
             }
         }
 
-        // ── SCAN OVERLAY ─────────────────────────────────────────────────────
+        // ── Label text overlay ────────────────────────────────────────────────
+        detections.forEach { det ->
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val pxWidth  = constraints.maxWidth.toFloat()
+                val pxHeight = constraints.maxHeight.toFloat()
+                val box      = det.boundingBox
+                Box(
+                    Modifier.offset(
+                        x = (box.left * pxWidth).dp  / 3f,
+                        y = ((box.top * pxHeight) - 36f).dp / 3f
+                    )
+                ) {
+                    Text(
+                        "${det.label} ${"%.0f".format(det.confidence * 100)}%",
+                        color      = Color.White,
+                        fontSize   = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier   = Modifier.padding(horizontal = 4.dp)
+                    )
+                }
+            }
+        }
+
+        // ── Scan Overlays ─────────────────────────────────────────────────────
         when (scanState) {
             ScanState.Idle -> IdleOverlay(
-                flashOn = flashOn,
+                flashOn       = flashOn,
                 onFlashToggle = { flashOn = !flashOn },
-                onClose = { navController.popBackStack() },
-                onScanDemo = { scanState = ScanState.Scanning }
+                onClose       = { navController.popBackStack() },
+                onScanDemo    = { triggerScan() }          // ← button now triggers capture+detect
             )
-            ScanState.Scanning -> ScanningOverlay()
-            is ScanState.Result -> ResultOverlay(
-                result = scanState as ScanState.Result,
+            ScanState.Scanning    -> ScanningOverlay()
+            is ScanState.Result   -> ResultOverlay(
+                result      = scanState as ScanState.Result,
                 onAddToCart = {
-                    // TODO: integrasikan dengan FirebaseRepository().saveScanResult(...)
-                    scanState = ScanState.Idle
+                    val r = scanState as ScanState.Result
+                    scope.launch {
+                        FirebaseRepository().saveScanResult(
+                            ScanResult(
+                                wasteLabel    = r.wasteLabel,
+                                wasteCategory = r.wasteCategory,
+                                confidence    = r.confidence,
+                                status        = "recognized",
+                                pointsEarned  = r.pointPerKg,
+                                imageUrl      = ""
+                            )
+                        )
+                            .onSuccess { android.util.Log.d("FIREBASE", "✅ Saved! ID: $it") }
+                            .onFailure { android.util.Log.e("FIREBASE", "❌ Failed: ${it.message}") }
+                    }
+                    detections = emptyList()
+                    scanState  = ScanState.Idle
                 },
-                onRetry = { scanState = ScanState.Idle }
+                onRetry = {
+                    detections = emptyList()
+                    scanState  = ScanState.Idle
+                }
             )
-            ScanState.Unrecognized -> UnrecognizedOverlay(onRetry = { scanState = ScanState.Idle })
-            ScanState.LowConfidence -> LowConfidenceOverlay(onRetry = { scanState = ScanState.Idle })
-        }
-
-        // ── DEMO: simulasi hasil scan (untuk testing tanpa AI) ───────────────
-        // Hapus block ini setelah AI developer mengintegrasikan YOLO
-        if (scanState == ScanState.Scanning) {
-            LaunchedEffect(Unit) {
-                kotlinx.coroutines.delay(2000)
-                scanState = ScanState.Result(
-                    wasteLabel = "Botol Kaca",
-                    wasteCategory = "Non-Organik Kaca",
-                    confidence = 0.87f,
-                    pointPerKg = 1500
-                )
-            }
+            ScanState.Unrecognized  -> UnrecognizedOverlay(onRetry = {
+                detections = emptyList(); scanState = ScanState.Idle })
+            ScanState.LowConfidence -> LowConfidenceOverlay(onRetry = {
+                detections = emptyList(); scanState = ScanState.Idle })
         }
     }
 }
 
-// ─── STATE ───────────────────────────────────────────────────────────────────
+// ─── STATE ────────────────────────────────────────────────────────────────────
 
 sealed class ScanState {
-    object Idle : ScanState()
-    object Scanning : ScanState()
-    object Unrecognized : ScanState()
-    object LowConfidence : ScanState()
+    object Idle            : ScanState()
+    object Scanning        : ScanState()
+    object Unrecognized    : ScanState()
+    object LowConfidence   : ScanState()
     data class Result(
-        val wasteLabel: String,
-        val wasteCategory: String,
-        val confidence: Float,
-        val pointPerKg: Int
+        val wasteLabel    : String,
+        val wasteCategory : String,
+        val confidence    : Float,
+        val pointPerKg    : Int
     ) : ScanState()
 }
 
-// ─── OVERLAYS ────────────────────────────────────────────────────────────────
+// ─── OVERLAYS ─────────────────────────────────────────────────────────────────
 
 @Composable
 private fun IdleOverlay(
@@ -126,12 +270,10 @@ private fun IdleOverlay(
     onScanDemo: () -> Unit
 ) {
     val green = Color(0xFF1FAA59)
-
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Top bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -152,24 +294,14 @@ private fun IdleOverlay(
                 )
             }
         }
-
         Spacer(Modifier.weight(1f))
-
-        // Scan frame
         ScanFrame()
-
         Spacer(Modifier.height(20.dp))
-
         Text(
             "Arahkan ke sampah dan tekan tombol scan",
-            color = Color.White.copy(0.8f),
-            fontSize = 13.sp,
-            textAlign = TextAlign.Center
+            color = Color.White.copy(0.8f), fontSize = 13.sp, textAlign = TextAlign.Center
         )
-
         Spacer(Modifier.weight(1f))
-
-        // Capture button
         Box(
             modifier = Modifier
                 .size(80.dp)
@@ -179,18 +311,12 @@ private fun IdleOverlay(
             contentAlignment = Alignment.Center
         ) {
             Box(
-                modifier = Modifier
-                    .size(64.dp)
-                    .clip(CircleShape)
-                    .background(Color.White),
+                modifier = Modifier.size(64.dp).clip(CircleShape).background(Color.White),
                 contentAlignment = Alignment.Center
             ) {
-                IconButton(onClick = onScanDemo) {
-                    Text("♻️", fontSize = 28.sp)
-                }
+                IconButton(onClick = onScanDemo) { Text("♻️", fontSize = 28.sp) }
             }
         }
-
         Spacer(Modifier.height(40.dp))
     }
 }
@@ -199,51 +325,25 @@ private fun IdleOverlay(
 private fun ScanFrame() {
     val infiniteTransition = rememberInfiniteTransition(label = "scan")
     val scanLineY by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
+        initialValue = 0f, targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(2000), RepeatMode.Reverse),
         label = "scanLine"
     )
-
-    Box(
-        modifier = Modifier
-            .size(260.dp)
-    ) {
-        // Corner brackets
+    Box(modifier = Modifier.size(260.dp)) {
         val cornerColor = Color(0xFF1FAA59)
-        val cornerSize = 40.dp
+        val cornerSize  = 40.dp
         val strokeWidth = 4.dp
-
-        // Top-left
-        Box(
-            Modifier.align(Alignment.TopStart)
-                .size(cornerSize)
-                .border(width = strokeWidth, color = cornerColor, shape = RoundedCornerShape(topStart = 12.dp))
-        )
-        // Top-right
-        Box(
-            Modifier.align(Alignment.TopEnd)
-                .size(cornerSize)
-                .border(width = strokeWidth, color = cornerColor, shape = RoundedCornerShape(topEnd = 12.dp))
-        )
-        // Bottom-left
-        Box(
-            Modifier.align(Alignment.BottomStart)
-                .size(cornerSize)
-                .border(width = strokeWidth, color = cornerColor, shape = RoundedCornerShape(bottomStart = 12.dp))
-        )
-        // Bottom-right
-        Box(
-            Modifier.align(Alignment.BottomEnd)
-                .size(cornerSize)
-                .border(width = strokeWidth, color = cornerColor, shape = RoundedCornerShape(bottomEnd = 12.dp))
-        )
-
-        // Scan line
+        Box(Modifier.align(Alignment.TopStart).size(cornerSize)
+            .border(strokeWidth, cornerColor, RoundedCornerShape(topStart = 12.dp)))
+        Box(Modifier.align(Alignment.TopEnd).size(cornerSize)
+            .border(strokeWidth, cornerColor, RoundedCornerShape(topEnd = 12.dp)))
+        Box(Modifier.align(Alignment.BottomStart).size(cornerSize)
+            .border(strokeWidth, cornerColor, RoundedCornerShape(bottomStart = 12.dp)))
+        Box(Modifier.align(Alignment.BottomEnd).size(cornerSize)
+            .border(strokeWidth, cornerColor, RoundedCornerShape(bottomEnd = 12.dp)))
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(2.dp)
+                .fillMaxWidth().height(2.dp)
                 .offset(y = (260 * scanLineY).dp)
                 .background(Color(0xFF1FAA59).copy(0.7f))
         )
@@ -253,9 +353,7 @@ private fun ScanFrame() {
 @Composable
 private fun ScanningOverlay() {
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(0.5f)),
+        modifier = Modifier.fillMaxSize().background(Color.Black.copy(0.5f)),
         contentAlignment = Alignment.Center
     ) {
         Card(shape = RoundedCornerShape(20.dp)) {
@@ -273,97 +371,44 @@ private fun ScanningOverlay() {
 }
 
 @Composable
-private fun ResultOverlay(
-    result: ScanState.Result,
-    onAddToCart: () -> Unit,
-    onRetry: () -> Unit
-) {
+private fun ResultOverlay(result: ScanState.Result, onAddToCart: () -> Unit, onRetry: () -> Unit) {
     val green = Color(0xFF1FAA59)
-
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.BottomCenter
-    ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
-        ) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)) {
             Column(modifier = Modifier.padding(24.dp)) {
-                // Category chip
-                Surface(
-                    color = green.copy(0.12f),
-                    shape = RoundedCornerShape(6.dp)
-                ) {
-                    Text(
-                        result.wasteCategory,
-                        color = green,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
+                Surface(color = green.copy(0.12f), shape = RoundedCornerShape(6.dp)) {
+                    Text(result.wasteCategory, color = green, fontSize = 12.sp,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
                 }
-
                 Spacer(Modifier.height(8.dp))
-
-                Text(
-                    result.wasteLabel,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 24.sp
-                )
-
+                Text(result.wasteLabel, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("♻️", fontSize = 16.sp)
                     Spacer(Modifier.width(4.dp))
-                    Text(
-                        "${result.pointPerKg} Poin / Kg",
-                        color = green,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 16.sp
-                    )
+                    Text("${result.pointPerKg} Poin / Kg", color = green,
+                        fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 }
-
                 Spacer(Modifier.height(8.dp))
-
-                // Confidence bar
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Text("Akurasi:", color = Color.Gray, fontSize = 12.sp)
                     Spacer(Modifier.width(8.dp))
-                    LinearProgressIndicator(
-                        progress = result.confidence,
-                        modifier = Modifier.weight(1f),
-                        color = green
-                    )
+                    LinearProgressIndicator(progress = result.confidence,
+                        modifier = Modifier.weight(1f), color = green)
                     Spacer(Modifier.width(8.dp))
-                    Text(
-                        "${(result.confidence * 100).toInt()}%",
-                        color = green,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Text("${(result.confidence * 100).toInt()}%", color = green,
+                        fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
-
                 Spacer(Modifier.height(20.dp))
-
-                Button(
-                    onClick = onAddToCart,
+                Button(onClick = onAddToCart,
                     modifier = Modifier.fillMaxWidth().height(50.dp),
                     shape = RoundedCornerShape(50),
                     colors = ButtonDefaults.buttonColors(containerColor = green)
-                ) {
-                    Text("Tambahkan ke Tong", fontWeight = FontWeight.Bold)
-                }
-
+                ) { Text("Tambahkan ke Tong", fontWeight = FontWeight.Bold) }
                 Spacer(Modifier.height(10.dp))
-
-                OutlinedButton(
-                    onClick = onRetry,
+                OutlinedButton(onClick = onRetry,
                     modifier = Modifier.fillMaxWidth().height(50.dp),
                     shape = RoundedCornerShape(50)
-                ) {
-                    Text("Scan Ulang")
-                }
+                ) { Text("Scan Ulang") }
             }
         }
     }
@@ -372,25 +417,16 @@ private fun ResultOverlay(
 @Composable
 private fun UnrecognizedOverlay(onRetry: () -> Unit) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)) {
+            Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("🔍", fontSize = 48.sp)
                 Spacer(Modifier.height(8.dp))
                 Text("Sampah Tidak Dikenali", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                Text(
-                    "Coba foto ulang dengan pencahayaan lebih baik atau dari sudut berbeda",
-                    color = Color.Gray, textAlign = TextAlign.Center, fontSize = 13.sp
-                )
+                Text("Coba foto ulang dengan pencahayaan lebih baik atau dari sudut berbeda",
+                    color = Color.Gray, textAlign = TextAlign.Center, fontSize = 13.sp)
                 Spacer(Modifier.height(16.dp))
-                Button(onClick = onRetry, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(50)) {
-                    Text("Coba Lagi")
-                }
+                Button(onClick = onRetry, modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(50)) { Text("Coba Lagi") }
             }
         }
     }
@@ -399,25 +435,16 @@ private fun UnrecognizedOverlay(onRetry: () -> Unit) {
 @Composable
 private fun LowConfidenceOverlay(onRetry: () -> Unit) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)) {
+            Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("⚠️", fontSize = 48.sp)
                 Spacer(Modifier.height(8.dp))
                 Text("Foto Kurang Jelas", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                Text(
-                    "Kepercayaan diri AI terlalu rendah. Mohon foto ulang sampah dengan lebih jelas.",
-                    color = Color.Gray, textAlign = TextAlign.Center, fontSize = 13.sp
-                )
+                Text("Kepercayaan diri AI terlalu rendah. Mohon foto ulang sampah dengan lebih jelas.",
+                    color = Color.Gray, textAlign = TextAlign.Center, fontSize = 13.sp)
                 Spacer(Modifier.height(16.dp))
-                Button(onClick = onRetry, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(50)) {
-                    Text("Foto Ulang")
-                }
+                Button(onClick = onRetry, modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(50)) { Text("Foto Ulang") }
             }
         }
     }
