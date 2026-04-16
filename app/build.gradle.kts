@@ -49,6 +49,7 @@ android {
             force("androidx.activity:activity:1.9.3")
             force("androidx.activity:activity-ktx:1.9.3")
             force("androidx.activity:activity-compose:1.9.3")
+            force("com.google.guava:guava:32.0.1-android")
         }
     }
 }
@@ -63,6 +64,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.compose.material:material-icons-extended")
 
     // Versi eksplisit — jangan biarkan transitive dependency override ini
@@ -87,10 +89,16 @@ dependencies {
 
     // ── CameraX (untuk AI Developer) ─────────────────────────────────────────
     // NOTE FOR AI DEVELOPER: Uncomment baris ini saat mengintegrasikan kamera
-    // implementation("androidx.camera:camera-core:1.3.4")
-    // implementation("androidx.camera:camera-camera2:1.3.4")
-    // implementation("androidx.camera:camera-lifecycle:1.3.4")
-    // implementation("androidx.camera:camera-view:1.3.4")
+     implementation("androidx.camera:camera-core:1.3.4")
+     implementation("androidx.camera:camera-camera2:1.3.4")
+     implementation("androidx.camera:camera-lifecycle:1.3.4")
+     implementation("androidx.camera:camera-view:1.3.4")
+     implementation("androidx.concurrent:concurrent-futures-ktx:1.1.0")
+     implementation("com.google.guava:guava:32.0.1-android")
+    // TFLite
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
+    implementation("com.google.accompanist:accompanist-permissions:0.32.0")
 
     // ── Debug ─────────────────────────────────────────────────────────────────
     debugImplementation("androidx.compose.ui:ui-tooling")
